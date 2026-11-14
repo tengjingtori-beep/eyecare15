@@ -1,0 +1,75 @@
+---
+name: Build DEB
+
+on:
+  push:
+    branches: [ main ]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: macos-15
+    timeout-minutes: 30
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Unpack project zip if needed
+        run: |
+          if [ ! -f Makefile ]; then
+            for z in *.zip; do unzip -o "$z"; done
+          fi
+          if [ -d EyeCare15 ] && [ -f EyeCare15/Makefile ]; then
+            cp -R EyeCare15/. .
+          fi
+          ls -la
+          test -f Makefile
+
+      - name: Fix permissions
+        run: |
+          ls -la
+          test -f Makefile
+          find . -type d -exec chmod 755 {} +
+          find . -type f -exec chmod 644 {} +
+
+      - name: Install build tools (ldid, dpkg)
+        run: |
+          brew install ldid dpkg || brew install ldid dpkg
+          which ldid
+
+      - name: Install Theos
+        run: |
+          export THEOS="$HOME/theos"
+          echo "THEOS=$THEOS" >> "$GITHUB_ENV"
+          git clone --recursive https://github.com/theos/theos.git "$THEOS"
+          rm -rf "$THEOS/sdks"
+          git clone --depth 1 --filter=blob:none --sparse https://github.com/theos/sdks.git "$THEOS/sdks"
+          git -C "$THEOS/sdks" sparse-checkout set iPhoneOS16.5.sdk
+          ls "$THEOS/sdks"
+
+      - name: Build package (rootless)
+        run: |
+          make package FINALPACKAGE=1 2>&1 | tee build.log
+          ls -lh packages/
+          for d in packages/*.deb; do echo "== $d =="; dpkg-deb -c "$d"; done
+
+      - name: Upload DEB
+        uses: actions/upload-artifact@v4
+        with:
+          name: EyeCare15-deb
+          path: packages/*.deb
+          if-no-files-found: error
+
+      - name: Upload build log on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-log
+          path: build.log
+          if-no-files-found: ignore
+
+      - name: Show errors on failure
+        if: failure()
+        run: |
+          grep -E "error:" build.log | head -n 30 | sed 's/%/%25/g' | while IFS= read -r line; do echo "::error::$line"; done
+---
